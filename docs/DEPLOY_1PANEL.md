@@ -10,8 +10,8 @@
 
 ## 镜像地址
 
-- `ghcr.io/muqing-kg/kiro-stack-kiro-gateway:latest`
-- `ghcr.io/muqing-kg/kiro-stack-kiro-go:latest`
+- `ghcr.io/muqing-kg/kiro-gateway:latest`
+- `ghcr.io/muqing-kg/kiro-go:latest`
 
 ## 自动化能力
 
