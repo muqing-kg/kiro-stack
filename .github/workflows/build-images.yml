@@ -4,10 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "kiro-go/**"
-      - "kiro-gateway/**"
-      - ".github/workflows/build-images.yml"
   workflow_dispatch:
 
 permissions:
