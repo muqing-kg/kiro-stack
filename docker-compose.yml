@@ -1,7 +1,6 @@
 services:
   kiro-gateway:
-    build: ./kiro-gateway
-    image: kiro-gateway-local:latest
+    image: ghcr.io/muqing-kg/kiro-gateway:latest
     container_name: kiro-gateway
     restart: unless-stopped
     environment:
@@ -13,7 +12,7 @@ services:
       - "8001:8000"
 
   kiro-go:
-    build: ./kiro-go
+    image: ghcr.io/muqing-kg/kiro-go:latest
     container_name: kiro-go
     restart: unless-stopped
     depends_on:
