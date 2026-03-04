@@ -1,16 +1,14 @@
-name: Build & Push Docker Images
+name: Build and Push Docker Images
 
-  on:
+on:
     push:
       branches: [main, master]
     pull_request:
       branches: [main, master]
-
-  env:
+env:
     REGISTRY: ghcr.io
     OWNER: ${{ github.repository_owner }}
-
-  jobs:
+jobs:
     build:
       runs-on: ubuntu-latest
       permissions:
