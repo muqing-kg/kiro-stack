@@ -11,11 +11,16 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"os"
 	"sync"
+	"time"
 )
 
 // GenerateMachineId generates a UUID v4 format machine identifier.
@@ -86,6 +91,13 @@ type Account struct {
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
 }
 
+// FireworksConfig represents Fireworks AI provider configuration.
+type FireworksConfig struct {
+	Enabled bool   `json:"enabled"`           // Whether Fireworks provider is enabled
+	ApiKey  string `json:"apiKey,omitempty"`  // Fireworks API key
+	BaseURL string `json:"baseUrl,omitempty"` // Fireworks API base URL
+}
+
 // Config represents the global application configuration.
 type Config struct {
 	// Server settings
@@ -95,6 +107,9 @@ type Config struct {
 	ApiKey        string    `json:"apiKey,omitempty"` // API key for client authentication
 	RequireApiKey bool      `json:"requireApiKey"`    // Whether to enforce API key validation
 	Accounts      []Account `json:"accounts"`         // Registered Kiro accounts
+
+	// Provider configurations
+	Fireworks *FireworksConfig `json:"fireworks,omitempty"` // Fireworks AI provider config
 
 	// Thinking mode configuration for extended reasoning output
 	ThinkingSuffix       string `json:"thinkingSuffix,omitempty"`       // Model suffix to trigger thinking mode (default: "-thinking")
@@ -480,5 +495,187 @@ func UpdatePreferredEndpoint(endpoint string) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.PreferredEndpoint = endpoint
+	return Save()
+}
+
+// ==================== Gist Sync ====================
+
+var (
+	githubToken string
+	gistID      string
+)
+
+// SetGistConfig sets Gist configuration from environment variables
+func SetGistConfig() {
+	githubToken = os.Getenv("GITHUB_TOKEN")
+	gistID = os.Getenv("GIST_ID")
+
+	if githubToken != "" && gistID != "" {
+		log.Printf("Gist sync enabled for: %s", gistID)
+	}
+}
+
+// IsGistConfigured returns true if both GITHUB_TOKEN and GIST_ID are set
+func IsGistConfigured() bool {
+	return githubToken != "" && gistID != ""
+}
+
+// ScheduleGistPush schedules an async push to Gist after config changes
+func ScheduleGistPush() {
+	if githubToken == "" || gistID == "" {
+		return
+	}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+
+		cfgLock.RLock()
+		data, err := json.MarshalIndent(cfg, "", "  ")
+		cfgLock.RUnlock()
+
+		if err != nil {
+			log.Printf("Gist push failed: %v", err)
+			return
+		}
+
+		if err := pushToGistInternal(string(data)); err != nil {
+			log.Printf("Gist push failed: %v", err)
+		}
+	}()
+}
+
+// pushToGistInternal pushes raw JSON to Gist without acquiring lock
+func pushToGistInternal(jsonData string) error {
+	if githubToken == "" || gistID == "" {
+		return nil
+	}
+
+	url := fmt.Sprintf("https://api.github.com/gists/%s", gistID)
+
+	payload := map[string]interface{}{
+		"description": "Kiro-Go Config",
+		"files": map[string]interface{}{
+			"config.json": map[string]string{
+				"content": jsonData,
+			},
+		},
+	}
+
+	payloadBytes, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("PATCH", url, bytes.NewReader(payloadBytes))
+	req.Header.Set("Authorization", "Bearer "+githubToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to update gist: HTTP %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("Config pushed to Gist: %s", gistID)
+	return nil
+}
+
+// LoadFromGistAPI fetches config from GitHub Gist API
+func LoadFromGistAPI() error {
+	if githubToken == "" || gistID == "" {
+		return fmt.Errorf("Gist not configured")
+	}
+
+	url := fmt.Sprintf("https://api.github.com/gists/%s", gistID)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+githubToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch gist: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to fetch gist: HTTP %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var gistResp struct {
+		Files map[string]struct {
+			Content string `json:"content"`
+		} `json:"files"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&gistResp); err != nil {
+		return fmt.Errorf("failed to decode gist response: %w", err)
+	}
+
+	file, ok := gistResp.Files["config.json"]
+	if !ok {
+		return fmt.Errorf("config.json not found in gist")
+	}
+
+	var c Config
+	if err := json.Unmarshal([]byte(file.Content), &c); err != nil {
+		return fmt.Errorf("failed to parse config JSON: %w", err)
+	}
+
+	cfgLock.Lock()
+	cfg = &c
+	if cfgPath == "" {
+		cfgPath = "data/config.json"
+	}
+	cfgLock.Unlock()
+
+	if err := Save(); err != nil {
+		log.Printf("Warning: failed to save local config backup: %v", err)
+	}
+
+	return nil
+}
+
+// GetFireworksConfig returns Fireworks configuration with defaults
+func GetFireworksConfig() FireworksConfig {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg.Fireworks == nil {
+		return FireworksConfig{
+			Enabled: false,
+			BaseURL: "https://api.fireworks.ai/inference/v1",
+		}
+	}
+	result := *cfg.Fireworks
+	if result.BaseURL == "" {
+		result.BaseURL = "https://api.fireworks.ai/inference/v1"
+	}
+	return result
+}
+
+// UpdateFireworksConfig updates Fireworks configuration
+func UpdateFireworksConfig(enabled bool, apiKey, baseURL string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg.Fireworks == nil {
+		cfg.Fireworks = &FireworksConfig{}
+	}
+	cfg.Fireworks.Enabled = enabled
+	cfg.Fireworks.ApiKey = apiKey
+	if baseURL != "" {
+		cfg.Fireworks.BaseURL = baseURL
+	} else {
+		cfg.Fireworks.BaseURL = "https://api.fireworks.ai/inference/v1"
+	}
 	return Save()
 }

@@ -58,6 +58,11 @@ func ParseModelAndThinking(model string, thinkingSuffix string) (string, bool) {
 		lower = strings.ToLower(model)
 	}
 
+	// 优先检查自定义映射（hardcoded custom mappings）
+	if mappedModel, wasRemapped := MapModelWithCustomMapping(model); wasRemapped {
+		return mappedModel, thinking
+	}
+
 	// 映射模型（有序匹配，长 key 优先）
 	for _, m := range modelMapOrdered {
 		if strings.Contains(lower, m.key) {
