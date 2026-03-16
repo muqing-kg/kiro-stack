@@ -1012,6 +1012,24 @@
                     data-i18n="settings.saveEndpoint"></button>
             </div>
             <div class="card">
+                <div class="card-header"><span class="card-title" data-i18n="settings.fireworksSettings"></span></div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:10px">
+                        <label class="switch"><input type="checkbox" id="fireworksEnabled"><span class="slider"></span></label>
+                        <span data-i18n="settings.enableFireworks"></span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>Fireworks API Key</label>
+                    <input type="text" id="fireworksApiKey" placeholder="fw_xxxxx">
+                </div>
+                <div class="form-group">
+                    <label>Fireworks Base URL</label>
+                    <input type="text" id="fireworksBaseUrl" placeholder="https://api.fireworks.ai/inference/v1">
+                </div>
+                <button class="btn btn-primary" onclick="saveFireworksConfig()" data-i18n="settings.saveFireworks"></button>
+            </div>
+            <div class="card">
                 <div class="card-header"><span class="card-title" data-i18n="settings.adminPassword"></span></div>
                 <div class="form-group"><label data-i18n="settings.newPassword"></label><input type="password"
                         id="newPassword" data-i18n-placeholder="settings.newPasswordPlaceholder"></div>
@@ -1655,6 +1673,8 @@
             document.getElementById('modelsEndpoint').textContent = baseUrl + '/v1/models';
             document.getElementById('statsEndpoint').textContent = baseUrl + '/v1/stats';
             await Promise.allSettled([loadStats(), loadAccounts(), loadSettings(), loadVersion()]);
+            // Auto refresh usage in background after initial load
+            setTimeout(() => autoRefreshAllUsage(), 500);
             // 自动检查更新
             setTimeout(() => checkUpdate(false), 2000);
         }
@@ -1669,6 +1689,16 @@
             document.getElementById('statCredits').textContent = (d.totalCredits || 0).toFixed(1);
         }
         async function loadAccounts() {
+            const res = await fetch('/admin/api/accounts', { headers: { 'X-Admin-Password': password } });
+            accountsData = await res.json();
+            renderAccounts();
+        }
+        async function autoRefreshAllUsage() {
+            const enabled = accountsData.filter(a => a.enabled);
+            if (enabled.length === 0) return;
+            await Promise.allSettled(enabled.map(a =>
+                fetch('/admin/api/accounts/' + a.id + '/refresh', { method: 'POST', headers: { 'X-Admin-Password': password } })
+            ));
             const res = await fetch('/admin/api/accounts', { headers: { 'X-Admin-Password': password } });
             accountsData = await res.json();
             renderAccounts();
