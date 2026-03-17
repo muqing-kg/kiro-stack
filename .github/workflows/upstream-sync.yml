@@ -1,0 +1,103 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+env:
+  BASE_BRANCH: main
+  UPSTREAM_BRANCH: main
+  UPSTREAM_REPO: https://github.com/ndnhatvien/kiro-stack.git
+
+jobs:
+  upstream-sync:
+    name: Sync upstream main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository with sync token
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "kiro-stack-sync-bot"
+          git config user.email "kiro-stack-sync-bot@users.noreply.github.com"
+
+      - name: Fetch upstream and merge into temp branch
+        id: merge
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch origin "$BASE_BRANCH"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+          ahead_count=$(git rev-list --count "origin/${BASE_BRANCH}..upstream/${UPSTREAM_BRANCH}")
+          if [ "$ahead_count" -eq 0 ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Upstream sync"
+              echo
+              echo "No new commits to merge from \`upstream/${UPSTREAM_BRANCH}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git checkout -B "automation/upstream-sync-${GITHUB_RUN_ID}" "origin/${BASE_BRANCH}"
+
+          set +e
+          git merge --no-ff --no-commit "upstream/${UPSTREAM_BRANCH}"
+          merge_exit=$?
+          set -e
+
+          if [ "$merge_exit" -ne 0 ]; then
+            {
+              echo "### Upstream sync blocked by conflicts"
+              echo
+              echo "Conflict files:"
+              while IFS= read -r file; do
+                echo "- \`${file}\`"
+              done < <(git diff --name-only --diff-filter=U)
+              echo
+              echo "Known hotspot: \`kiro-go/web/index.html\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if git diff --cached --quiet && git diff --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Upstream sync"
+              echo
+              echo "Upstream merge completed but produced no effective file changes."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git commit -m "chore: sync upstream main"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate merged images build
+        if: steps.merge.outputs.has_changes == 'true'
+        run: |
+          docker build -t kiro-gateway:sync-check ./kiro-gateway
+          docker build -t kiro-go:sync-check ./kiro-go
+
+      - name: Push validated sync to main
+        if: steps.merge.outputs.has_changes == 'true'
+        run: git push origin "HEAD:${BASE_BRANCH}"
+
+      - name: Summarize sync result
+        if: steps.merge.outputs.has_changes == 'true'
+        run: |
+          {
+            echo "### Upstream sync completed"
+            echo
+            echo "Merged upstream changes were validated by local image builds and pushed to \`${BASE_BRANCH}\`."
+            echo "The image workflow will run from the bot commit."
+          } >> "$GITHUB_STEP_SUMMARY"
